@@ -1,10 +1,11 @@
 package collector
 
 import (
-	"collector/smartcontract/token"
 	"context"
 	"fmt"
 	"math/big"
+
+	"collector/smartcontract/erc20"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -20,31 +21,34 @@ type TransferInfo struct {
 	To              string  `csv:"to"`
 	Value           uint64  `csv:"value"`
 	NormalizedValue float64 `csv:"normalized_value"`
-	UsdPrice        float64 `csv:"usd_price"`
 	TxHash          string  `csv:"tx_hash"`
 	BlockNumber     uint64  `csv:"block_number"`
-	EventID         uint64  `csv:"event_id"`
-	Counterparty    string  `csv:"counterparty"`
+	EventID         uint16  `csv:"event_id"`
 }
 
 func (c *collectorService) collectTransfers() error {
-	var transferTopic = c.abi.Events["Transfer"].ID
+	var (
+		transferTopic = c.abi.Events["Transfer"].ID
+		topics        = [2][][]common.Hash{
+			{{transferTopic}, {c.address.Hash()}},     // from "c.address"
+			{{transferTopic}, {}, {c.address.Hash()}}, // to "c.address"
+		}
+	)
 
-	q := ethereum.FilterQuery{
-		ToBlock: new(big.Int).Set(c.fromBlock),
-		Topics:  [][]common.Hash{{transferTopic}},
-	}
+	q := ethereum.FilterQuery{ToBlock: new(big.Int).Set(c.fromBlock)}
 	updateQuery(&q, c.toBlock)
 
 	for q.FromBlock.Cmp(c.toBlock) < 0 {
+		for _, tops := range topics {
+			q.Topics = tops
+			events, err := c.cli.FilterLogs(context.Background(), q)
+			if err != nil {
+				return fmt.Errorf("filter logs from %d to %d: %w", q.FromBlock, q.ToBlock, err)
+			}
 
-		events, err := c.cli.FilterLogs(context.Background(), q)
-		if err != nil {
-			return fmt.Errorf("filter logs from %d to %d: %w", q.FromBlock, q.ToBlock, err)
-		}
-
-		for _, event := range events {
-			c.msgChan <- event
+			for _, event := range events {
+				c.msgChan <- event
+			}
 		}
 
 		updateQuery(&q, c.toBlock)
@@ -56,20 +60,37 @@ func (c *collectorService) collectTransfers() error {
 func (c *collectorService) convertToTransferInfo(eventRaw types.Log) TransferInfo {
 	event, err := parseTransferEvent(c.abi, &eventRaw)
 	if err != nil {
-		log.WithError(err).Error("parse transfer event")
-		// return fmt.Errorf("parse event %d from tx %s: %w", eventRaw.Index, eventRaw.TxHash, err)
+		log.WithError(err).
+			WithField("tx_hash", eventRaw.TxHash.Hex()).
+			WithField("event_id", eventRaw.Index).
+			Error("parse transfer event")
+		event = &erc20.Erc20Transfer{Wad: new(big.Int)}
+	}
+
+	token, err := c.getTokenInfo(eventRaw.Address.Hex())
+	if err != nil {
+		log.WithError(err).
+			WithField("address", eventRaw.Address.Hex()).
+			Panic("get token info")
 	}
 
 	return TransferInfo{
-		Token: eventRaw.Address.Hex(),
-		Value: event.Value.Uint64(),
+		Token:           token.Address,
+		Symbol:          token.Symbol,
+		From:            event.Src.Hex(),
+		To:              event.Dst.Hex(),
+		Value:           event.Wad.Uint64(),
+		NormalizedValue: Normalize(event.Wad, token.Multiplier),
+		TxHash:          eventRaw.TxHash.Hex(),
+		BlockNumber:     eventRaw.BlockNumber,
+		EventID:         uint16(eventRaw.Index),
 	}
 }
 
-func parseTransferEvent(ABI *abi.ABI, event *types.Log) (*token.TokenTransfer, error) {
+func parseTransferEvent(ABI *abi.ABI, event *types.Log) (*erc20.Erc20Transfer, error) {
 	const eventName = "Transfer"
 
-	var transfer token.TokenTransfer
+	var transfer erc20.Erc20Transfer
 	if err := ABI.UnpackIntoInterface(&transfer, eventName, event.Data); err != nil {
 		return nil, fmt.Errorf("unpack event: %w", err)
 	}
@@ -89,7 +110,7 @@ func parseTransferEvent(ABI *abi.ABI, event *types.Log) (*token.TokenTransfer, e
 }
 
 func updateQuery(q *ethereum.FilterQuery, maxBlock *big.Int) {
-	var batchSize = big.NewInt(1000) // const
+	batchSize := big.NewInt(1000) // const
 
 	q.FromBlock = q.ToBlock
 	q.ToBlock = minBigInt(new(big.Int).Add(q.ToBlock, batchSize), maxBlock)

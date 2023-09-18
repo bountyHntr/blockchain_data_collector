@@ -21,6 +21,7 @@ type CsvConfig struct {
 	InType       any
 	OutType      any
 	Converter    func(in any) any
+	Done         chan<- struct{}
 }
 
 func runCsvService(cfg CsvConfig) (chan<- any, error) {
@@ -47,6 +48,7 @@ type csvWriter struct {
 	converter    func(in interface{}) interface{}
 	file         *os.File
 	flushOnWrite bool
+	done         chan<- struct{}
 }
 
 func newCsvWriter(msgType reflect.Type, cfg *CsvConfig) (w csvWriter, err error) {
@@ -70,6 +72,7 @@ func newCsvWriter(msgType reflect.Type, cfg *CsvConfig) (w csvWriter, err error)
 
 	w.writer = bufio.NewWriter(w.file)
 	w.encoder = csvutil.NewEncoder(csv.NewWriter(w.writer))
+	w.done = cfg.Done
 
 	return w, nil
 }
@@ -104,4 +107,5 @@ func (w *csvWriter) stop() {
 	if err := w.file.Close(); err != nil {
 		log.WithError(err).Error("close file")
 	}
+	w.done <- struct{}{}
 }

@@ -7,19 +7,19 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	log "github.com/sirupsen/logrus"
 )
 
 type TransactionInfo struct {
-	TxHash       string `csv:"tx_hash"`
-	Nonce        uint64 `csv:"nonce"`
-	Receiver     string `csv:"receiver"`
-	BlockNumber  string `csv:"block_number"`
-	Timestamp    string `csv:"timestamp"`
-	Counterparty string `csv:"counterparty"`
+	TxHash      string `csv:"tx_hash"`
+	Nonce       uint64 `csv:"nonce"`
+	Sender      string `csv:"sender"`
+	Receiver    string `csv:"receiver"`
+	BlockNumber uint64 `csv:"block_number"`
+	Timestamp   uint64 `csv:"timestamp"`
 }
 
 func (c *collectorService) collectAllTxs() error {
-
 	blockNum := new(big.Int).Set(c.fromBlock)
 	for blockNum.Cmp(c.toBlock) <= 0 {
 		block, err := c.cli.BlockByNumber(context.Background(), blockNum)
@@ -28,7 +28,15 @@ func (c *collectorService) collectAllTxs() error {
 		}
 
 		for _, tx := range block.Transactions() {
-			c.msgChan <- tx
+			sender := c.txSender(tx)
+			if (tx.To() != nil && *tx.To() == c.address) || sender == c.address {
+				c.msgChan <- &TxWrapper{
+					Tx:          tx,
+					Sender:      sender,
+					BlockNumber: block.NumberU64(),
+					Timestamp:   block.Time(),
+				}
+			}
 		}
 
 		blockNum.Add(blockNum, common.Big1)
@@ -37,8 +45,32 @@ func (c *collectorService) collectAllTxs() error {
 	return nil
 }
 
-func (c *collectorService) convertToTxInfo(tx *types.Transaction) TransactionInfo {
+type TxWrapper struct {
+	Tx          *types.Transaction
+	Sender      common.Address
+	BlockNumber uint64
+	Timestamp   uint64
+}
+
+func (c *collectorService) convertToTxInfo(w *TxWrapper) TransactionInfo {
 	return TransactionInfo{
-		TxHash: tx.Hash().Hex(),
+		TxHash:      w.Tx.Hash().Hex(),
+		Nonce:       w.Tx.Nonce(),
+		Sender:      w.Sender.Hex(),
+		Receiver:    w.Tx.To().Hex(),
+		BlockNumber: w.BlockNumber,
+		Timestamp:   w.Timestamp,
 	}
+}
+
+func (c *collectorService) txSender(tx *types.Transaction) common.Address {
+	signer := types.LatestSignerForChainID(tx.ChainId())
+	sender, err := signer.Sender(tx)
+	if err != nil {
+		log.WithError(err).
+			WithField("tx_hash", tx.Hash().Hex()).
+			Error("failed to get tx sender")
+	}
+
+	return sender
 }
