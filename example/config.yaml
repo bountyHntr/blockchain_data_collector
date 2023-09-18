@@ -1,0 +1,6 @@
+URL: https://mainnet.infura.io/v3/<access-token>
+Address: 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 # Vitalik Buterin
+FromBlock: 18060388
+ToBlock: 18162399
+Transfers: true
+OutputFilePath: ./report.csv

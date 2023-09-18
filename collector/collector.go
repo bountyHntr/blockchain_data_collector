@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"collector/smartcontract/erc20"
@@ -39,6 +42,7 @@ type collectorService struct {
 	toBlock   *big.Int
 	msgChan   chan<- any
 	done      chan struct{}
+	exitChan  chan os.Signal
 
 	mu     sync.RWMutex
 	tokens map[string]tokenInfo
@@ -69,6 +73,11 @@ func Run(cfg Config) (err error) {
 	if err := c.initTokensInfo(); err != nil {
 		return fmt.Errorf("init tokens info: %w", err)
 	}
+
+	c.exitChan = make(chan os.Signal, 10)
+	signal.Notify(c.exitChan, os.Interrupt, syscall.SIGTERM, syscall.SIGKILL)
+
+	log.Info("init collector")
 
 	if cfg.Transfers {
 		return c.collectTransfers()
@@ -126,13 +135,13 @@ func (c *collectorService) newCsvConfig(filePath string, transfers bool) CsvConf
 	if transfers {
 		csvConfig.InType = &types.Log{}
 		csvConfig.OutType = TransferInfo{}
-		csvConfig.Converter = func(val any) any {
+		csvConfig.Converter = func(val any) (any, bool) {
 			return c.convertToTransferInfo(val.(types.Log))
 		}
 	} else {
 		csvConfig.InType = &TxWrapper{}
 		csvConfig.OutType = TransactionInfo{}
-		csvConfig.Converter = func(val any) any {
+		csvConfig.Converter = func(val any) (any, bool) {
 			return c.convertToTxInfo(val.(*TxWrapper))
 		}
 	}

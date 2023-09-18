@@ -20,8 +20,20 @@ type TransactionInfo struct {
 }
 
 func (c *collectorService) collectAllTxs() error {
+	log.WithField("from_block", c.fromBlock).
+		WithField("to_block", c.toBlock).
+		WithField("address", c.address).
+		Info("collect txs")
+
 	blockNum := new(big.Int).Set(c.fromBlock)
 	for blockNum.Cmp(c.toBlock) <= 0 {
+
+		select {
+		case <-c.exitChan:
+			return nil
+		default:
+		}
+
 		block, err := c.cli.BlockByNumber(context.Background(), blockNum)
 		if err != nil {
 			return fmt.Errorf("get block %d: %w", blockNum, err)
@@ -52,7 +64,7 @@ type TxWrapper struct {
 	Timestamp   uint64
 }
 
-func (c *collectorService) convertToTxInfo(w *TxWrapper) TransactionInfo {
+func (c *collectorService) convertToTxInfo(w *TxWrapper) (TransactionInfo, bool) {
 	return TransactionInfo{
 		TxHash:      w.Tx.Hash().Hex(),
 		Nonce:       w.Tx.Nonce(),
@@ -60,7 +72,7 @@ func (c *collectorService) convertToTxInfo(w *TxWrapper) TransactionInfo {
 		Receiver:    w.Tx.To().Hex(),
 		BlockNumber: w.BlockNumber,
 		Timestamp:   w.Timestamp,
-	}
+	}, true
 }
 
 func (c *collectorService) txSender(tx *types.Transaction) common.Address {

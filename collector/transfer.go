@@ -27,6 +27,11 @@ type TransferInfo struct {
 }
 
 func (c *collectorService) collectTransfers() error {
+	log.WithField("from_block", c.fromBlock).
+		WithField("to_block", c.toBlock).
+		WithField("address", c.address).
+		Info("collect transfers")
+
 	var (
 		transferTopic = c.abi.Events["Transfer"].ID
 		topics        = [2][][]common.Hash{
@@ -40,6 +45,13 @@ func (c *collectorService) collectTransfers() error {
 
 	for q.FromBlock.Cmp(c.toBlock) < 0 {
 		for _, tops := range topics {
+
+			select {
+			case <-c.exitChan:
+				return nil
+			default:
+			}
+
 			q.Topics = tops
 			events, err := c.cli.FilterLogs(context.Background(), q)
 			if err != nil {
@@ -57,21 +69,22 @@ func (c *collectorService) collectTransfers() error {
 	return nil
 }
 
-func (c *collectorService) convertToTransferInfo(eventRaw types.Log) TransferInfo {
+func (c *collectorService) convertToTransferInfo(eventRaw types.Log) (TransferInfo, bool) {
 	event, err := parseTransferEvent(c.abi, &eventRaw)
 	if err != nil {
 		log.WithError(err).
 			WithField("tx_hash", eventRaw.TxHash.Hex()).
 			WithField("event_id", eventRaw.Index).
 			Error("parse transfer event")
-		event = &erc20.Erc20Transfer{Wad: new(big.Int)}
+		return TransferInfo{}, false
 	}
 
 	token, err := c.getTokenInfo(eventRaw.Address.Hex())
 	if err != nil {
 		log.WithError(err).
 			WithField("address", eventRaw.Address.Hex()).
-			Panic("get token info")
+			Error("get token info")
+		return TransferInfo{}, false
 	}
 
 	return TransferInfo{
@@ -84,7 +97,7 @@ func (c *collectorService) convertToTransferInfo(eventRaw types.Log) TransferInf
 		TxHash:          eventRaw.TxHash.Hex(),
 		BlockNumber:     eventRaw.BlockNumber,
 		EventID:         uint16(eventRaw.Index),
-	}
+	}, true
 }
 
 func parseTransferEvent(ABI *abi.ABI, event *types.Log) (*erc20.Erc20Transfer, error) {

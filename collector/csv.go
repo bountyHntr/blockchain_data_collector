@@ -20,7 +20,7 @@ type CsvConfig struct {
 	FlushOnWrite bool
 	InType       any
 	OutType      any
-	Converter    func(in any) any
+	Converter    func(in any) (any, bool)
 	Done         chan<- struct{}
 }
 
@@ -45,7 +45,7 @@ type csvWriter struct {
 	encoder      *csvutil.Encoder
 	writer       *bufio.Writer
 	outType      reflect.Type
-	converter    func(in interface{}) interface{}
+	converter    func(in interface{}) (any, bool)
 	file         *os.File
 	flushOnWrite bool
 	done         chan<- struct{}
@@ -80,7 +80,10 @@ func newCsvWriter(msgType reflect.Type, cfg *CsvConfig) (w csvWriter, err error)
 func (w *csvWriter) run(dataChan <-chan interface{}) {
 	for msg := range dataChan {
 		if w.converter != nil {
-			msg = w.converter(msg)
+			var ok bool
+			if msg, ok = w.converter(msg); !ok {
+				continue
+			}
 		} else if w.outType != nil {
 			msg = reflect.ValueOf(msg).Convert(w.outType).Interface()
 		}
